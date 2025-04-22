@@ -5,23 +5,16 @@ import numpy as np
 import tempfile
 import os
 from pathlib import Path
-import firebase_admin
-from firebase_admin import credentials, firestore
 import datetime
 
 app = Flask(__name__)
 
 base_dir = Path(__file__).resolve().parent
 model_path = base_dir / "models" / "best.pt"
-firebase_cred_path = base_dir / "firebase" / "serviceAccountKey.json"
 
 model = YOLO(str(model_path))
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 confidence_threshold = 0.12
-
-cred = credentials.Certificate(str(firebase_cred_path))
-firebase_admin.initialize_app(cred)
-db = firestore.client()
 
 def check_overlap(box1, box2):
     x1, y1, w1, h1 = box1
@@ -34,13 +27,6 @@ def check_overlap(box1, box2):
         return False
     intersection_area = (x_right - x_left) * (y_bottom - y_top)
     return intersection_area > 0.5 * min(w1 * h1, w2 * h2)
-
-def log_detection_to_firebase(filename):
-    log_data = {
-        "filename": filename,
-        "timestamp": datetime.datetime.utcnow()
-    }
-    db.collection("detections").add(log_data)
 
 def process_video(input_path, output_path, frame_skip=2, filename="uploaded_video.mp4"):
     cap = cv2.VideoCapture(input_path)
@@ -89,9 +75,6 @@ def process_video(input_path, output_path, frame_skip=2, filename="uploaded_vide
 
     cap.release()
     out.release()
-
-    if smoker_found:
-        log_detection_to_firebase(filename)
 
 @app.route("/upload", methods=["POST"])
 def upload_video():
