@@ -4,12 +4,24 @@ from ultralytics import YOLO
 import numpy as np
 import tempfile
 import os
+from pathlib import Path
+import firebase_admin
+from firebase_admin import credentials, firestore
+import datetime
 
 app = Flask(__name__)
 
-model = YOLO('/Users/abynaya/Downloads/best (2).pt')
+base_dir = Path(__file__).resolve().parent
+model_path = base_dir / "models" / "best.pt"
+firebase_cred_path = base_dir / "firebase" / "serviceAccountKey.json"
+
+model = YOLO(str(model_path))
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 confidence_threshold = 0.12
+
+cred = credentials.Certificate(str(firebase_cred_path))
+firebase_admin.initialize_app(cred)
+db = firestore.client()
 
 def check_overlap(box1, box2):
     x1, y1, w1, h1 = box1
@@ -23,7 +35,14 @@ def check_overlap(box1, box2):
     intersection_area = (x_right - x_left) * (y_bottom - y_top)
     return intersection_area > 0.5 * min(w1 * h1, w2 * h2)
 
-def process_video(input_path, output_path, frame_skip=2):
+def log_detection_to_firebase(filename):
+    log_data = {
+        "filename": filename,
+        "timestamp": datetime.datetime.utcnow()
+    }
+    db.collection("detections").add(log_data)
+
+def process_video(input_path, output_path, frame_skip=2, filename="uploaded_video.mp4"):
     cap = cv2.VideoCapture(input_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -34,6 +53,7 @@ def process_video(input_path, output_path, frame_skip=2):
 
     frame_idx = 0
     last_annotated = None
+    smoker_found = False
 
     while True:
         ret, frame = cap.read()
@@ -46,19 +66,18 @@ def process_video(input_path, output_path, frame_skip=2):
             gray = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2GRAY)
             faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
-            smoker_detected = False
             for (x, y, w, h) in faces:
                 for result in results[0].boxes:
                     if result.cls == 0 and result.conf.item() >= confidence_threshold:
                         cx, cy, cw, ch = result.xywh[0]
                         cigarette_box = (cx - cw / 2, cy - ch / 2, cw, ch)
                         if check_overlap((x, y, w, h), cigarette_box):
-                            smoker_detected = True
+                            smoker_found = True
                             cv2.rectangle(annotated_frame, (x - 20, y - 20), (x + w + 20, y + h + 20), (0, 0, 255), 4)
                             cv2.putText(annotated_frame, "Smoker Detected", (x, y - 30),
                                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                             break
-                if not smoker_detected:
+                if not smoker_found:
                     cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
 
             last_annotated = annotated_frame.copy()
@@ -70,6 +89,9 @@ def process_video(input_path, output_path, frame_skip=2):
 
     cap.release()
     out.release()
+
+    if smoker_found:
+        log_detection_to_firebase(filename)
 
 @app.route("/upload", methods=["POST"])
 def upload_video():
@@ -87,14 +109,13 @@ def upload_video():
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_output:
         output_path = temp_output.name
 
-    process_video(input_path, output_path)
+    process_video(input_path, output_path, filename=file.filename)
 
     response = make_response(send_file(output_path, mimetype='video/mp4', as_attachment=True, download_name='processed_video.mp4'))
 
-    # Clean up temp input after response is sent (optional)
     os.unlink(input_path)
     
     return response
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, host="0.0.0.0")
