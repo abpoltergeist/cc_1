@@ -1,17 +1,34 @@
-from flask import Flask, request, send_file, make_response
+import os
 import cv2
 from ultralytics import YOLO
 import numpy as np
 import tempfile
-import os
+from flask import Flask, request, send_file, make_response
 from pathlib import Path
 import datetime
+import logging
 
+# Set up Flask app
 app = Flask(__name__)
 
+# Directory paths
 base_dir = Path(__file__).resolve().parent
 model_path = base_dir / "models" / "best.pt"
+logs_dir = base_dir / "logs"
 
+# Create logs folder if it doesn't exist
+if not logs_dir.exists():
+    logs_dir.mkdir()
+
+# Set up logging configuration
+log_file = logs_dir / "detection_log.txt"
+logging.basicConfig(
+    filename=log_file,
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+)
+
+# Initialize model and face detection cascade
 model = YOLO(str(model_path))
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 confidence_threshold = 0.12
@@ -62,6 +79,7 @@ def process_video(input_path, output_path, frame_skip=2, filename="uploaded_vide
                             cv2.rectangle(annotated_frame, (x - 20, y - 20), (x + w + 20, y + h + 20), (0, 0, 255), 4)
                             cv2.putText(annotated_frame, "Smoker Detected", (x, y - 30),
                                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                            logging.info(f"Smoker detected in {filename} at frame {frame_idx}")
                             break
                 if not smoker_found:
                     cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
@@ -79,10 +97,12 @@ def process_video(input_path, output_path, frame_skip=2, filename="uploaded_vide
 @app.route("/upload", methods=["POST"])
 def upload_video():
     if 'video' not in request.files:
+        logging.warning("No video uploaded")
         return make_response("No video uploaded", 400)
 
     file = request.files['video']
     if file.filename == '':
+        logging.warning("No file selected")
         return make_response("No file selected", 400)
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_input:
@@ -92,12 +112,14 @@ def upload_video():
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_output:
         output_path = temp_output.name
 
+    logging.info(f"Processing video: {file.filename}")
     process_video(input_path, output_path, filename=file.filename)
 
     response = make_response(send_file(output_path, mimetype='video/mp4', as_attachment=True, download_name='processed_video.mp4'))
 
     os.unlink(input_path)
     
+    logging.info(f"Processed video: {file.filename}")
     return response
 
 if __name__ == "__main__":
