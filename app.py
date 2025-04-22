@@ -1,34 +1,32 @@
 import os
+import logging
+from flask import Flask, request, send_file, make_response
 import cv2
 from ultralytics import YOLO
 import numpy as np
 import tempfile
-from flask import Flask, request, send_file, make_response
 from pathlib import Path
 import datetime
-import logging
 
-# Set up Flask app
 app = Flask(__name__)
 
-# Directory paths
-base_dir = Path(__file__).resolve().parent
-model_path = base_dir / "models" / "best.pt"
-logs_dir = base_dir / "logs"
+# Sequential log file name based on timestamp
+log_dir = Path(__file__).resolve().parent / "logs"
+log_dir.mkdir(parents=True, exist_ok=True)
 
-# Create logs folder if it doesn't exist
-if not logs_dir.exists():
-    logs_dir.mkdir()
+# Generate a sequential log file name based on the current timestamp
+log_file_name = f"app_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+log_file_path = log_dir / log_file_name
 
-# Set up logging configuration
-log_file = logs_dir / "detection_log.txt"
 logging.basicConfig(
-    filename=log_file,
+    filename=log_file_path,
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Initialize model and face detection cascade
+base_dir = Path(__file__).resolve().parent
+model_path = base_dir / "models" / "best.pt"
+
 model = YOLO(str(model_path))
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 confidence_threshold = 0.12
@@ -79,7 +77,6 @@ def process_video(input_path, output_path, frame_skip=2, filename="uploaded_vide
                             cv2.rectangle(annotated_frame, (x - 20, y - 20), (x + w + 20, y + h + 20), (0, 0, 255), 4)
                             cv2.putText(annotated_frame, "Smoker Detected", (x, y - 30),
                                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                            logging.info(f"Smoker detected in {filename} at frame {frame_idx}")
                             break
                 if not smoker_found:
                     cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
@@ -97,13 +94,17 @@ def process_video(input_path, output_path, frame_skip=2, filename="uploaded_vide
 @app.route("/upload", methods=["POST"])
 def upload_video():
     if 'video' not in request.files:
-        logging.warning("No video uploaded")
         return make_response("No video uploaded", 400)
 
     file = request.files['video']
     if file.filename == '':
-        logging.warning("No file selected")
         return make_response("No file selected", 400)
+
+    # Log incoming HTTP request details
+    client_ip = request.remote_addr
+    method = request.method
+    file_name = file.filename
+    logging.info(f"Received request from IP: {client_ip}, Method: {method}, File: {file_name}")
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_input:
         input_path = temp_input.name
@@ -112,15 +113,24 @@ def upload_video():
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_output:
         output_path = temp_output.name
 
-    logging.info(f"Processing video: {file.filename}")
     process_video(input_path, output_path, filename=file.filename)
+
+    # Log the completion of the video processing
+    logging.info(f"Processed video {file_name} successfully, output saved to {output_path}")
 
     response = make_response(send_file(output_path, mimetype='video/mp4', as_attachment=True, download_name='processed_video.mp4'))
 
     os.unlink(input_path)
     
-    logging.info(f"Processed video: {file.filename}")
     return response
+
+@app.route("/download_log", methods=["GET"])
+def download_log():
+    # Serve the sequential log file
+    if os.path.exists(log_file_path):
+        return send_file(log_file_path, mimetype='text/plain', as_attachment=True, download_name=log_file_name)
+    else:
+        return make_response("Log file not found", 404)
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
