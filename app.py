@@ -1,36 +1,36 @@
-import os
 import logging
-from flask import Flask, request, send_file, make_response
+import os
 import cv2
+from flask import Flask, request, send_file, make_response
 from ultralytics import YOLO
-import numpy as np
 import tempfile
-from pathlib import Path
 import datetime
+from pathlib import Path
 
+# Set up Flask app
 app = Flask(__name__)
 
-# Sequential log file name based on timestamp
-log_dir = Path(__file__).resolve().parent / "logs"
-log_dir.mkdir(parents=True, exist_ok=True)
-
-# Generate a sequential log file name based on the current timestamp
-log_file_name = f"app_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-log_file_path = log_dir / log_file_name
-
-logging.basicConfig(
-    filename=log_file_path,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-
+# Define directories and model path
 base_dir = Path(__file__).resolve().parent
 model_path = base_dir / "models" / "best.pt"
-
 model = YOLO(str(model_path))
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
+# Define confidence threshold
 confidence_threshold = 0.12
 
+# Create logs directory if it doesn't exist
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+
+# Generate a sequential log file name
+log_file = os.path.join(log_dir, f"log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+
+# Set up logging configuration
+logging.basicConfig(filename=log_file, level=logging.INFO, 
+                    format="%(asctime)s - %(message)s")
+
+# Function to check for overlap between two bounding boxes
 def check_overlap(box1, box2):
     x1, y1, w1, h1 = box1
     x2, y2, w2, h2 = box2
@@ -43,6 +43,7 @@ def check_overlap(box1, box2):
     intersection_area = (x_right - x_left) * (y_bottom - y_top)
     return intersection_area > 0.5 * min(w1 * h1, w2 * h2)
 
+# Process the video to detect smokers
 def process_video(input_path, output_path, frame_skip=2, filename="uploaded_video.mp4"):
     cap = cv2.VideoCapture(input_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -77,6 +78,10 @@ def process_video(input_path, output_path, frame_skip=2, filename="uploaded_vide
                             cv2.rectangle(annotated_frame, (x - 20, y - 20), (x + w + 20, y + h + 20), (0, 0, 255), 4)
                             cv2.putText(annotated_frame, "Smoker Detected", (x, y - 30),
                                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                            
+                            # Log cigarette detection with timestamp
+                            logging.info(f"Cigarette detected at frame {frame_idx}, face at ({x},{y}), "
+                                         f"confidence: {result.conf.item():.2f}")
                             break
                 if not smoker_found:
                     cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), (255, 255, 0), 2)
@@ -91,6 +96,7 @@ def process_video(input_path, output_path, frame_skip=2, filename="uploaded_vide
     cap.release()
     out.release()
 
+# Flask route to upload video
 @app.route("/upload", methods=["POST"])
 def upload_video():
     if 'video' not in request.files:
@@ -100,37 +106,29 @@ def upload_video():
     if file.filename == '':
         return make_response("No file selected", 400)
 
-    # Log incoming HTTP request details
-    client_ip = request.remote_addr
-    method = request.method
-    file_name = file.filename
-    logging.info(f"Received request from IP: {client_ip}, Method: {method}, File: {file_name}")
-
+    # Save uploaded video to temp file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_input:
         input_path = temp_input.name
         file.save(input_path)
 
+    # Create temp file for output video
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_output:
         output_path = temp_output.name
 
+    # Process the video
     process_video(input_path, output_path, filename=file.filename)
 
-    # Log the completion of the video processing
-    logging.info(f"Processed video {file_name} successfully, output saved to {output_path}")
-
+    # Send back the processed video
     response = make_response(send_file(output_path, mimetype='video/mp4', as_attachment=True, download_name='processed_video.mp4'))
 
-    os.unlink(input_path)
+    os.unlink(input_path)  # Delete temp input file
+    
+    # Provide log file URL back as a response (for simplicity, return the filename)
+    log_file_url = f"{log_file}"
+    response.headers["Log-File"] = log_file_url
     
     return response
 
-@app.route("/download_log", methods=["GET"])
-def download_log():
-    # Serve the sequential log file
-    if os.path.exists(log_file_path):
-        return send_file(log_file_path, mimetype='text/plain', as_attachment=True, download_name=log_file_name)
-    else:
-        return make_response("Log file not found", 404)
-
+# Run the Flask app
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
